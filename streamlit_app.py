@@ -4,33 +4,28 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import chardet
 
-# Улучшенная функция загрузки данных с автоматическим определением кодировки
+# Улучшенная функция загрузки данных
 @st.cache_data
 def load_data(file_name):
-    # Определяем кодировку файла
     with open(file_name, 'rb') as f:
         result = chardet.detect(f.read(10000))
     
-    # Загружаем данные с определенной кодировкой
     try:
         df = pd.read_csv(file_name, sep=';', encoding=result['encoding'])
     except UnicodeDecodeError:
-        # Если автоматическое определение не сработало, пробуем альтернативные кодировки
         try:
             df = pd.read_csv(file_name, sep=';', encoding='utf-8')
         except:
             df = pd.read_csv(file_name, sep=';', encoding='cp1251')
     
-    # Очистка данных
-    df = df.rename(columns=lambda x: x.strip())  # Удаляем пробелы в названиях столбцов
+    df = df.rename(columns=lambda x: x.strip())
     if 'Name' in df.columns:
-        df['Name'] = df['Name'].str.strip()  # Очищаем названия регионов
+        df['Name'] = df['Name'].str.strip()
     else:
         st.error(f"В файле {file_name} отсутствует столбец 'Name'")
-    
     return df
 
-# Загрузка данных с обработкой ошибок
+# Загрузка данных
 try:
     budget_df = load_data('budget.csv')
     housing_df = load_data('housing.csv')
@@ -39,34 +34,46 @@ except Exception as e:
     st.error(f"Ошибка загрузки данных: {str(e)}")
     st.stop()
 
-# Заголовок дашборда
-st.title('Региональный анализ данных')
+# Настройка страницы
+st.title('Сравнение показателей региона')
 
-# Выбор темы (от 1 до 3)
-topic = st.radio(
-    "Выберите тему данных:",
-    ('Бюджет', 'Жилищный фонд', 'Инвестиции'),
-    horizontal=True
+# Выбор региона (только один)
+all_regions = budget_df['Name'].unique()
+selected_region = st.selectbox('Выберите регион:', all_regions, index=0)
+
+# Выбор тем (можно несколько)
+topics = st.multiselect(
+    'Выберите темы для сравнения:',
+    ['Бюджет', 'Жилищный фонд', 'Инвестиции'],
+    default=['Бюджет']
 )
 
-# Получаем соответствующий датафрейм
-if topic == 'Бюджет':
-    df = budget_df
-    y_label = 'Бюджет (рубли)'
-elif topic == 'Жилищный фонд':
-    df = housing_df
-    y_label = 'Жилищный фонд (кв. м на чел.)'
-else:
-    df = investments_df
-    y_label = 'Инвестиции (рубли)'
-
-# Проверяем, что в данных есть числовые столбцы (годы)
-numeric_cols = [col for col in df.columns if str(col).isdigit()]
-if not numeric_cols:
-    st.error("В данных отсутствуют числовые столбцы (годы). Проверьте формат данных.")
+if not topics:
+    st.warning("Пожалуйста, выберите хотя бы одну тему.")
     st.stop()
 
-available_years = [int(col) for col in numeric_cols]
+# Словарь для данных и подписей
+data_dict = {
+    'Бюджет': (budget_df, 'Бюджет (рубли)', 'tab:blue'),
+    'Жилищный фонд': (housing_df, 'Жилищный фонд (кв.м/чел.)', 'tab:orange'),
+    'Инвестиции': (investments_df, 'Инвестиции (рубли)', 'tab:green')
+}
+
+# Определяем общие года для всех выбранных тем
+year_columns = []
+for topic in topics:
+    df, _, _ = data_dict[topic]
+    numeric_cols = [col for col in df.columns if str(col).isdigit()]
+    if not year_columns:
+        year_columns = numeric_cols
+    else:
+        year_columns = [col for col in year_columns if col in numeric_cols]
+
+if not year_columns:
+    st.error("Нет общих годов для выбранных тем.")
+    st.stop()
+
+available_years = [int(col) for col in year_columns]
 min_year, max_year = min(available_years), max(available_years)
 
 # Выбор диапазона лет
@@ -79,57 +86,45 @@ year_range = st.slider(
 
 # Фильтрация по годам
 year_columns = [str(year) for year in range(year_range[0], year_range[1]+1)]
-display_df = df[['Name'] + year_columns]
-
-# Выбор региона (только один)
-all_regions = df['Name'].unique()
-selected_region = st.selectbox(
-    'Выберите регион:',
-    all_regions,
-    index=0
-)
-
-# Фильтрация данных по выбранному региону
-filtered_df = display_df[display_df['Name'] == selected_region]
 
 # Построение графика
-st.subheader(f"График данных: {topic}")
-
+st.subheader(f"Сравнение показателей для региона: {selected_region}")
 fig, ax = plt.subplots(figsize=(12, 6))
-colors = list(mcolors.TABLEAU_COLORS.values())
 
-for idx, (_, row) in enumerate(filtered_df.iterrows()):
-    region_name = row['Name']
-    values = row[year_columns].values
-    years = [int(year) for year in year_columns]
+# Для каждой выбранной темы
+for topic in topics:
+    df, y_label, color = data_dict[topic]
+    region_data = df[df['Name'] == selected_region]
     
-    ax.plot(
-        years,
-        values,
-        label=region_name,
-        color=colors[idx % len(colors)],
-        marker='o',
-        linewidth=2
-    )
+    if not region_data.empty:
+        values = region_data[year_columns].values.flatten()
+        years = [int(year) for year in year_columns]
+        
+        ax.plot(
+            years,
+            values,
+            label=y_label,
+            color=color,
+            marker='o',
+            linewidth=2
+        )
 
 ax.set_xlabel('Год', fontsize=12)
-ax.set_ylabel(y_label, fontsize=12)
-ax.set_title(f'Динамика показателя "{topic}" для региона {selected_region}', fontsize=14)
+ax.set_ylabel('Значение показателя', fontsize=12)
+ax.set_title(f'Сравнение показателей для {selected_region}', fontsize=14)
 ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
 ax.grid(True, linestyle='--', alpha=0.7)
-plt.xticks(years, rotation=45)
+plt.xticks([int(year) for year in year_columns], rotation=45)
 plt.tight_layout()
 
 st.pyplot(fig)
 
-# Отображение таблицы с данными
-st.subheader("Таблица данных")
-st.dataframe(
-    filtered_df.reset_index(drop=True),
-    height=min(400, len(filtered_df) * 35 + 35),  # Автоподбор высоты таблицы
-    use_container_width=True
-)
-
-# Дополнительная информация
-st.markdown("---")
-st.info(f"Данные за период с {year_range[0]} по {year_range[1]} год. Выбран регион: {selected_region}")
+# Отображение таблиц с данными
+st.subheader("Данные по выбранным темам")
+for topic in topics:
+    df, _, _ = data_dict[topic]
+    st.markdown(f"**{topic}**")
+    st.dataframe(
+        df[df['Name'] == selected_region][['Name'] + year_columns].reset_index(drop=True),
+        use_container_width=True
+    )
