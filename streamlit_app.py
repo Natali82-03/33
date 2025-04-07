@@ -1,124 +1,135 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import chardet
 
-# Настройка страницы (должна быть первой!)
-st.set_page_config(layout="wide", page_title="Анализ жилищного фонда")
-
+# Улучшенная функция загрузки данных с автоматическим определением кодировки
 @st.cache_data
-def load_housing_data():
-    try:
-        # Загрузка данных с указанием разделителя и десятичного символа
-        df = pd.read_csv(
-            'housing.csv',
-            sep=';',
-            encoding='utf-8',
-            decimal=',',
-            thousands=' '  # Если есть пробелы как разделители тысяч
-        )
-        
-        # Очистка названий регионов (удаление лишних пробелов)
-        df['Name'] = df['Name'].str.strip()
-        
-        # Преобразование годов в целые числа (если нужно)
-        df.columns = ['Name'] + [int(col) if str(col).isdigit() else col for col in df.columns[1:]]
-        
-        return df
+def load_data(file_name):
+    # Определяем кодировку файла
+    with open(file_name, 'rb') as f:
+        result = chardet.detect(f.read(10000))
     
-    except Exception as e:
-        st.error(f"Ошибка загрузки данных: {str(e)}")
-        return None
+    # Загружаем данные с определенной кодировкой
+    try:
+        df = pd.read_csv(file_name, sep=';', encoding=result['encoding'])
+    except UnicodeDecodeError:
+        # Если автоматическое определение не сработало, пробуем альтернативные кодировки
+        try:
+            df = pd.read_csv(file_name, sep=';', encoding='utf-8')
+        except:
+            df = pd.read_csv(file_name, sep=';', encoding='cp1251')
+    
+    # Очистка данных
+    df = df.rename(columns=lambda x: x.strip())  # Удаляем пробелы в названиях столбцов
+    if 'Name' in df.columns:
+        df['Name'] = df['Name'].str.strip()  # Очищаем названия регионов
+    else:
+        st.error(f"В файле {file_name} отсутствует столбец 'Name'")
+    
+    return df
 
-# Загрузка данных
-housing_df = load_housing_data()
-if housing_df is None:
+# Загрузка данных с обработкой ошибок
+try:
+    budget_df = load_data('budget.csv')
+    housing_df = load_data('housing.csv')
+    investments_df = load_data('investments.csv')
+except Exception as e:
+    st.error(f"Ошибка загрузки данных: {str(e)}")
     st.stop()
 
-# Проверка данных (для отладки)
-st.write("Первые 5 строк данных:", housing_df.head())
+# Заголовок дашборда
+st.title('Региональный анализ данных')
 
-# Доступные годы (из заголовков столбцов)
-available_years = [col for col in housing_df.columns if isinstance(col, int)]
+# Выбор темы (от 1 до 3)
+topic = st.radio(
+    "Выберите тему данных:",
+    ('Бюджет', 'Жилищный фонд', 'Инвестиции'),
+    horizontal=True
+)
+
+# Получаем соответствующий датафрейм
+if topic == 'Бюджет':
+    df = budget_df
+    y_label = 'Бюджет (рубли)'
+elif topic == 'Жилищный фонд':
+    df = housing_df
+    y_label = 'Жилищный фонд (кв. м на чел.)'
+else:
+    df = investments_df
+    y_label = 'Инвестиции (рубли)'
+
+# Проверяем, что в данных есть числовые столбцы (годы)
+numeric_cols = [col for col in df.columns if str(col).isdigit()]
+if not numeric_cols:
+    st.error("В данных отсутствуют числовые столбцы (годы). Проверьте формат данных.")
+    st.stop()
+
+available_years = [int(col) for col in numeric_cols]
 min_year, max_year = min(available_years), max(available_years)
 
-# Интерфейс пользователя
-st.title("📊 Анализ жилищного фонда Орловской области")
-
-# Сайдбар с настройками
-with st.sidebar:
-    st.header("⚙️ Настройки отображения")
-    
-    year_range = st.slider(
-        "Диапазон лет:",
-        min_value=min_year,
-        max_value=max_year,
-        value=(min_year, max_year)
-    )
-    
-    selected_regions = st.multiselect(
-        "Выберите районы/города:",
-        options=housing_df['Name'].unique(),
-        default=[housing_df['Name'].iloc[0]]  # Первый регион по умолчанию
-    )
-    
-    show_raw_data = st.checkbox("Показать сырые данные", value=False)
-
-# Проверка выбора
-if not selected_regions:
-    st.warning("Пожалуйста, выберите хотя бы один регион!")
-    st.stop()
-
-# Фильтрация данных
-filtered_df = housing_df[housing_df['Name'].isin(selected_regions)]
-
-# Преобразование в "длинный" формат для Plotly
-melted_df = filtered_df.melt(
-    id_vars=['Name'],
-    value_vars=[str(y) for y in range(year_range[0], year_range[1]+1)],
-    var_name='Year',
-    value_name='Площадь (м²/чел)'
+# Выбор диапазона лет
+year_range = st.slider(
+    'Выберите диапазон лет:',
+    min_value=min_year,
+    max_value=max_year,
+    value=(min_year, max_year)
 )
 
-# Создание графика
-fig = px.line(
-    melted_df,
-    x='Year',
-    y='Площадь (м²/чел)',
-    color='Name',
-    title=f"Динамика жилищного фонда ({year_range[0]}-{year_range[1]})",
-    labels={'Name': 'Регион'},
-    height=600
+# Фильтрация по годам
+year_columns = [str(year) for year in range(year_range[0], year_range[1]+1)]
+display_df = df[['Name'] + year_columns]
+
+# Выбор региона (только один)
+all_regions = df['Name'].unique()
+selected_region = st.selectbox(
+    'Выберите регион:',
+    all_regions,
+    index=0
 )
 
-# Настройка отображения графика
-fig.update_layout(
-    hovermode='x unified',
-    legend=dict(
-        orientation="h",
-        yanchor="bottom",
-        y=1.02,
-        xanchor="right",
-        x=1
-    )
-)
+# Фильтрация данных по выбранному региону
+filtered_df = display_df[display_df['Name'] == selected_region]
 
-# Отображение графика
-st.plotly_chart(fig, use_container_width=True)
+# Построение графика
+st.subheader(f"График данных: {topic}")
 
-# Отображение сырых данных при необходимости
-if show_raw_data:
-    st.subheader("Исходные данные")
-    st.dataframe(filtered_df, use_container_width=True)
+fig, ax = plt.subplots(figsize=(12, 6))
+colors = list(mcolors.TABLEAU_COLORS.values())
 
-# Пояснения
-with st.expander("ℹ️ О данных"):
-    st.markdown("""
-    **Метрики:**
-    - Показатель: площадь жилья на человека (м²/чел)
-    - Данные за период 2019-2024 гг.
+for idx, (_, row) in enumerate(filtered_df.iterrows()):
+    region_name = row['Name']
+    values = row[year_columns].values
+    years = [int(year) for year in year_columns]
     
-    **Инструкция:**
-    1. Выберите интересующие регионы
-    2. Отрегулируйте диапазон лет
-    3. Используйте легенду графика для управления отображением
-    """)
+    ax.plot(
+        years,
+        values,
+        label=region_name,
+        color=colors[idx % len(colors)],
+        marker='o',
+        linewidth=2
+    )
+
+ax.set_xlabel('Год', fontsize=12)
+ax.set_ylabel(y_label, fontsize=12)
+ax.set_title(f'Динамика показателя "{topic}" для региона {selected_region}', fontsize=14)
+ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+ax.grid(True, linestyle='--', alpha=0.7)
+plt.xticks(years, rotation=45)
+plt.tight_layout()
+
+st.pyplot(fig)
+
+# Отображение таблицы с данными
+st.subheader("Таблица данных")
+st.dataframe(
+    filtered_df.reset_index(drop=True),
+    height=min(400, len(filtered_df) * 35 + 35),  # Автоподбор высоты таблицы
+    use_container_width=True
+)
+
+# Дополнительная информация
+st.markdown("---")
+st.info(f"Данные за период с {year_range[0]} по {year_range[1]} год. Выбран регион: {selected_region}")
